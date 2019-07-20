@@ -83,11 +83,11 @@ class BertClassifier(object):
         clipped_gradients, _ = tf.clip_by_global_norm(gradients, max_gradient_norm)
 
         # optimisation
-        learning_rate = 0.001
+        learning_rate = 0.0005
         self.optimizer = tf.train.AdamOptimizer(learning_rate)
         self.train_op = self.optimizer.apply_gradients(zip(clipped_gradients, tvars))
 
-    def fine_tune(self, train_data):
+    def fine_tune(self, train_data, valid_data):
         use_gpu = True
         if use_gpu == True:
             if 'X_SGE_CUDA_DEVICE' in os.environ:
@@ -98,7 +98,7 @@ class BertClassifier(object):
 
             else: # development only e.g. air202
                 print('running locally...')
-                os.environ['CUDA_VISIBLE_DEVICES'] = '0' # choose the device (GPU) here
+                os.environ['CUDA_VISIBLE_DEVICES'] = '3' # choose the device (GPU) here
 
             sess_config = tf.ConfigProto(allow_soft_placement=True)
             sess_config.gpu_options.allow_growth = True # Whether the GPU memory usage can grow dynamically.
@@ -117,12 +117,13 @@ class BertClassifier(object):
             len_train_data = len(train_data)
 
             count_progress_step = int(len_train_data/20)
-            count_progress = count_progress_step
 
             for epoch in range(num_epochs):
                 random.shuffle(train_data)
                 i = 0
                 train_loss = 0
+                count_progress = count_progress_step
+
                 while i < len_train_data:
                     j = 0
                     input_ids = []
@@ -159,9 +160,9 @@ class BertClassifier(object):
                     valid_input_mask = []
                     valid_labels = []
                     while vj < batch_size:
-                        valid_input_ids = valid_input_ids.append(valid_data[vi+vj].input_ids)
-                        valid_input_mask = valid_input_mask.append(valid_data[vi+vj].input_mask)
-                        valid_labels = valid_labels.append(valid_data[vi+vj].label_id)
+                        valid_input_ids.append(valid_data[vi+vj].input_ids)
+                        valid_input_mask.append(valid_data[vi+vj].input_mask)
+                        valid_labels.append(valid_data[vi+vj].label_id)
                         vj += 1
 
                     valid_feed_dict = {self.input_ids: valid_input_ids,
@@ -243,7 +244,7 @@ def main():
     valid_data = features[:960]
 
     print("finish loading data")
-    classifer.fine_tune(train_data=train_data)
+    classifer.fine_tune(train_data=train_data, valid_data=valid_data)
 
 
 if __name__ == "__main__":
