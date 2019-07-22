@@ -47,6 +47,20 @@ def read_movie_reviews(path):
 
     return phrases, sentiments
 
+def read_movie_test(path):
+    with open(path) as file:
+        lines = file.readlines()
+        header = lines[0]
+        body = lines[1:]
+    phrases = []
+    ids = []
+    for line in body:
+        line = line.strip().split('\t')
+        phrase = line[-1]
+        ids.append(int(line[0]))
+        phrases.append(phrase)
+    return phrases, ids
+    
 def test():
     path = "/home/punpun/Desktop/sentiment1_data/train.tsv"
     phrases, sentiments = read_movie_reviews(path)

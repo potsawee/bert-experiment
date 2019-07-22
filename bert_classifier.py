@@ -1,28 +1,22 @@
 import modeling
 from bert_tokenizer import *
 import tensorflow as tf
+import numpy as np
 import os
 import sys
 import random
 import pdb
 
 class BertClassifier(object):
-    def __init__(self, config):
-        # config
-        bert_config = config['bert_config']
-        is_training = config['is_training']
-        init_checkpoint = config['init_checkpoint']
-        num_labels = config['num_labels']
-
+    def __init__(self):
         # input_ids = [batch_size, seq_length]
         self.input_ids = tf.placeholder(tf.int32, [None, None], name="input_ids")
         self.input_mask = tf.placeholder(tf.int32, [None, None], name="input_mask")
         self.labels = tf.placeholder(tf.int32, [None], name="labels")
 
-
-        self.create_model(bert_config, is_training, self.input_ids, self.input_mask, self.labels, num_labels)
-        self.init_model(init_checkpoint)
-        self.create_optimizer()
+        # self.create_model(bert_config, is_training, self.input_ids, self.input_mask, self.labels, num_labels)
+        # self.init_model(init_checkpoint)
+        # self.create_optimizer()
 
     def create_model(self, bert_config, is_training, input_ids, input_mask, labels, num_labels):
 
@@ -87,7 +81,15 @@ class BertClassifier(object):
         self.optimizer = tf.train.AdamOptimizer(learning_rate)
         self.train_op = self.optimizer.apply_gradients(zip(clipped_gradients, tvars))
 
-    def fine_tune(self, train_data, valid_data):
+    def fine_tune(self, train_data, valid_data, num_epochs=5):
+        save_path = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert102/fine-tuned"
+
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+
+    	# save & restore model
+        saver = tf.train.Saver(max_to_keep=2)
+
         use_gpu = True
         if use_gpu == True:
             if 'X_SGE_CUDA_DEVICE' in os.environ:
@@ -112,7 +114,6 @@ class BertClassifier(object):
 
             sess.run(tf.global_variables_initializer())
 
-            num_epochs = 10
             batch_size = 32
             len_train_data = len(train_data)
 
@@ -175,14 +176,73 @@ class BertClassifier(object):
                 print("epoch {}: validation loss = {}".format(epoch, valid_loss/len(valid_data)))
                 # -------------------------------------------------------------------------------- #
 
+                saver.save(sess, save_path + "/model", global_step=epoch)
 
+    def predict(self, data, saved_model):
+        scores_avg = []
+        scores_argmax = []
 
-    def predict(self, data):
-        pass
+        # 0. set up environment
+        use_gpu = True
+        if use_gpu == True:
+            if 'X_SGE_CUDA_DEVICE' in os.environ:
+                print('running on the stack...')
+                cuda_device = os.environ['X_SGE_CUDA_DEVICE']
+                print('X_SGE_CUDA_DEVICE is set to {}'.format(cuda_device))
+                os.environ['CUDA_VISIBLE_DEVICES'] = cuda_device
+
+            else: # development only e.g. air202
+                print('running locally...')
+                os.environ['CUDA_VISIBLE_DEVICES'] = '3' # choose the device (GPU) here
+
+            sess_config = tf.ConfigProto(allow_soft_placement=True)
+            sess_config.gpu_options.allow_growth = True # Whether the GPU memory usage can grow dynamically.
+            sess_config.gpu_options.per_process_gpu_memory_fraction = 0.95 # The fraction of GPU memory that the process can use.
+
+        else:
+            os.environ['CUDA_VISIBLE_DEVICES'] = ''
+            sess_config = tf.ConfigProto()
+            
+        with tf.Session(config=sess_config) as sess:
+
+            # 1. load a trained (fine-tuned) model
+            saver = tf.train.Saver()
+            saver.restore(sess, saved_model)
+            print('loaded model...', saved_model)
+
+            # 2. make prediction
+            num_features = len(data)
+            batch_size = 1000
+            i = 0
+            while i < num_features:
+                j = 0
+                input_ids = []
+                input_mask = []
+                while j < batch_size and i+j < num_features:
+                    input_ids.append(data[i+j].input_ids)
+                    input_mask.append(data[i+j].input_mask)
+                    j += 1
+
+                feed_dict = {self.input_ids: input_ids, self.input_mask: input_mask}
+
+                probs = sess.run(self.probabilities, feed_dict=feed_dict)
+
+                for x in probs:
+                    score_avg = x[0]*0 + x[1]*1 + x[2]*2 + x[3]*3 + x[4]*4
+                    score_argmax = np.argmax(x)
+                    scores_avg.append(score_avg)
+                    scores_argmax.append(score_argmax)
+
+                i += batch_size
+                print('#', end='')
+                sys.stdout.flush()
+
+        return scores_avg, scores_argmax
+
 
 class InputFeatures(object):
     """A single set of features of data."""
-    def __init__(self, input_ids, input_mask, label_id, is_real_example=True):
+    def __init__(self, input_ids, input_mask, label_id,is_real_example=True):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.label_id = label_id
@@ -223,28 +283,94 @@ def prepare_sentiment_data(data_file, vocab_file, do_lower_case, max_seq_length=
         features.append(feature)
     return features
 
+def prepare_sentiment_test(data_file, vocab_file, do_lower_case, max_seq_length=64):
+	features = []
+	phrases, phrase_ids = read_movie_test(data_file)
+	bert_tokenizer = BertTokenizer(vocab_file, do_lower_case)
+	for phrase in phrases:
+		tokens = bert_tokenizer.raw2tokens(phrase)
+
+		if len(tokens) > max_seq_length-2: # to account for [CLS] and [SEP]
+			tokens = tokens[:max_seq_length-2]
+
+		tokens = ['[CLS]'] + tokens + ['[SEP]']
+		input_ids = bert_tokenizer.tokens2ids(tokens)
+
+        # The mask has 1 for real tokens and 0 for padding tokens. Only real
+        # tokens are attended to.
+		input_mask = [1]*len(input_ids)
+
+		while len(input_ids) < max_seq_length:
+			input_ids.append(0)
+			input_mask.append(0)
+		assert len(input_ids) == max_seq_length
+		assert len(input_mask) == max_seq_length
+
+		feature = InputFeatures(
+            input_ids=input_ids,
+            input_mask=input_mask,
+            label_id=None,
+            is_real_example=True)
+
+		features.append(feature)
+
+	return features, phrase_ids
+
 def main():
-    config = {}
+    # config
     bert_config_file = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert_pretrained/uncased_L-12_H-768_A-12/bert_config.json"
-    config['bert_config'] = modeling.BertConfig.from_json_file(bert_config_file)
-    config['is_training'] = True
-    config['init_checkpoint'] = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert_pretrained/uncased_L-12_H-768_A-12/bert_model.ckpt"
-    config['num_labels'] = 5
-
-    classifer = BertClassifier(config)
-
+    bert_config = modeling.BertConfig.from_json_file(bert_config_file)
+    init_checkpoint = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert_pretrained/uncased_L-12_H-768_A-12/bert_model.ckpt"
+    num_labels = 5
 
     data_file = "/home/alta/BLTSpeaking/ged-pm574/summer2019/sentiment1_data/train.tsv"
+    test_file = "/home/alta/BLTSpeaking/ged-pm574/summer2019/sentiment1_data/test.tsv"
     vocab_file = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert_pretrained/uncased_L-12_H-768_A-12/vocab.txt"
 
     features = prepare_sentiment_data(data_file, vocab_file, do_lower_case=True)
+    test_features, phrase_ids = prepare_sentiment_test(test_file, vocab_file, do_lower_case=True)
     random.seed(25)
     random.shuffle(features)
     train_data = features[960:]
     valid_data = features[:960]
-
     print("finish loading data")
-    classifer.fine_tune(train_data=train_data, valid_data=valid_data)
+
+    mode = 'fine_tune'
+
+    if mode == 'fine_tune':
+        classifer = BertClassifier()
+        is_training = True
+        classifer.create_model(bert_config, is_training, classifer.input_ids, classifer.input_mask, classifer.labels, num_labels)
+        classifer.init_model(init_checkpoint)
+        classifer.create_optimizer()
+        classifer.fine_tune(train_data=train_data, valid_data=valid_data, num_epochs=5)
+    elif mode == 'predict':
+        classifer = BertClassifier()
+        is_training = False
+        classifer.create_model(bert_config, is_training, classifer.input_ids, classifer.input_mask, classifer.labels, num_labels)
+        saved_model = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert102/fine-tuned/model-4"
+        scores_avg,  scores_argmax = classifer.predict(data=test_features, saved_model=saved_model)
+
+        assert len(phrase_ids) == len(scores_avg)
+        assert len(phrase_ids) == len(scores_argmax)
+
+        with open("predictions_avg.csv", 'w') as file:
+            for id, score in zip(phrase_ids, scores_avg):
+                grade = int(round(score))
+                file.write("{},{}\n".format(id, grade))
+
+        with open("predictions_argmax.csv", 'w') as file:
+            for id, score in zip(phrase_ids, scores_argmax):
+                grade = int(round(score))
+                file.write("{},{}\n".format(id, grade))
+
+    else:
+        raise ValueError("Mode not recognised")
+# def dev():
+# 	pdb.set_trace()
+#	test_file = "/home/alta/BLTSpeaking/ged-pm574/summer2019/sentiment1_data/test.tsv"
+#	vocab_file = "/home/alta/BLTSpeaking/ged-pm574/summer2019/bert_pretrained/uncased_L-12_H-768_A-12/vocab.txt"
+#	test_features, phrase_ids = prepare_sentiment_test(test_file, vocab_file, do_lower_case=True)
 
 
 if __name__ == "__main__":
